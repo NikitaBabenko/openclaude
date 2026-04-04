@@ -41,6 +41,13 @@ import {
 import { sanitizeSchemaForOpenAICompat } from '../../utils/schemaSanitizer.js'
 import { redactSecretValueForDisplay } from '../../utils/providerProfile.js'
 
+type SecretValueSource = Partial<{
+  OPENAI_API_KEY: string
+  CODEX_API_KEY: string
+  GEMINI_API_KEY: string
+  GOOGLE_API_KEY: string
+}>
+
 const GITHUB_MODELS_DEFAULT_BASE = 'https://models.github.ai/inference'
 const GITHUB_API_VERSION = '2022-11-28'
 const GITHUB_429_MAX_RETRIES = 3
@@ -104,6 +111,37 @@ function convertSystemPrompt(
       .join('\n\n')
   }
   return String(system)
+}
+
+function convertToolResultContent(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return JSON.stringify(content ?? '')
+
+  const chunks: string[] = []
+  for (const block of content) {
+    if (block?.type === 'text' && typeof block.text === 'string') {
+      chunks.push(block.text)
+      continue
+    }
+
+    if (block?.type === 'image') {
+      const source = block.source
+      if (source?.type === 'url' && source.url) {
+        chunks.push(`[Image](${source.url})`)
+      } else if (source?.type === 'base64') {
+        chunks.push(`[image:${source.media_type ?? 'unknown'}]`)
+      } else {
+        chunks.push('[image]')
+      }
+      continue
+    }
+
+    if (typeof block?.text === 'string') {
+      chunks.push(block.text)
+    }
+  }
+
+  return chunks.join('\n')
 }
 
 function convertContentBlocks(
@@ -182,11 +220,7 @@ function convertMessages(
 
         // Emit tool results as tool messages
         for (const tr of toolResults) {
-          const trContent = Array.isArray(tr.content)
-            ? tr.content.map((c: { text?: string }) => c.text ?? '').join('\n')
-            : typeof tr.content === 'string'
-              ? tr.content
-              : JSON.stringify(tr.content ?? '')
+          const trContent = convertToolResultContent(tr.content)
           result.push({
             role: 'tool',
             tool_call_id: tr.tool_use_id ?? 'unknown',
@@ -750,7 +784,7 @@ class OpenAIShimMessages {
           ? ` or place a Codex auth.json at ${credentials.authPath}`
           : ''
         const safeModel =
-          redactSecretValueForDisplay(request.requestedModel, process.env) ??
+          redactSecretValueForDisplay(request.requestedModel, process.env as SecretValueSource) ??
           'the requested model'
         throw new Error(
           `Codex auth is required for ${safeModel}. Set CODEX_API_KEY${authHint}.`,
@@ -941,13 +975,13 @@ class OpenAIShimMessages {
         response.status,
         errorResponse,
         `OpenAI API error ${response.status}: ${errorBody}${rateHint}`,
-        response.headers as unknown as Record<string, string>,
+        response.headers as unknown as Headers,
       )
     }
 
     throw APIError.generate(
       500, undefined, 'OpenAI shim: request loop exited unexpectedly',
-      {} as Record<string, string>,
+      new Headers(),
     )
   }
 

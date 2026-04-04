@@ -25,6 +25,7 @@ import { renameRecordingForSession } from '../utils/asciicast.js';
 import { updateSessionName } from '../utils/concurrentSessions.js';
 import { loadConversationForResume } from '../utils/conversationRecovery.js';
 import { checkCrossProjectResume } from '../utils/crossProjectResume.js';
+import { errorMessage } from '../utils/errors.js';
 import type { FileHistorySnapshot } from '../utils/fileHistory.js';
 import { logError } from '../utils/log.js';
 import { createSystemMessage } from '../utils/messages.js';
@@ -101,6 +102,7 @@ export function ResumeConversation({
     agentColor?: AgentColorName;
     mainThreadAgentDefinition?: AgentDefinition;
   } | null>(null);
+  const [resumeError, setResumeError] = React.useState<string | null>(null);
   const [crossProjectCommand, setCrossProjectCommand] = React.useState<string | null>(null);
   const sessionLogResultRef = React.useRef<SessionLogResult | null>(null);
   // Mirror of logs.length so loadMoreLogs can compute value indices outside
@@ -176,6 +178,7 @@ export function ResumeConversation({
     process.exit(1);
   }
   async function onSelect(log_0: LogOption) {
+    setResumeError(null);
     setResuming(true);
     const resumeStart = performance.now();
     const crossProjectCheck = checkCrossProjectResume(log_0, showAllProjects, worktreePaths);
@@ -287,7 +290,8 @@ export function ResumeConversation({
         success: false
       });
       logError(e as Error);
-      throw e;
+      setResumeError(errorMessage(e));
+      setResuming(false);
     }
   }
   if (crossProjectCommand) {
@@ -308,10 +312,18 @@ export function ResumeConversation({
         <Text> Resuming conversation…</Text>
       </Box>;
   }
+  const resumeErrorBanner = resumeError ? <Box flexDirection="column" marginBottom={1}>
+      <Text color="red">Failed to resume conversation.</Text>
+      <Text>{resumeError}</Text>
+      <Text dimColor={true}>Choose a different conversation to continue.</Text>
+    </Box> : null;
   if (filteredLogs.length === 0) {
     return <NoConversationsMessage />;
   }
-  return <LogSelector logs={filteredLogs} maxHeight={rows} onCancel={onCancel} onSelect={onSelect} onLogsChanged={isResumeWithRenameEnabled ? () => loadLogs(showAllProjects) : undefined} onLoadMore={loadMoreLogs} initialSearchQuery={initialSearchQuery} showAllProjects={showAllProjects} onToggleAllProjects={handleToggleAllProjects} onAgenticSearch={agenticSessionSearch} />;
+  return <Box flexDirection="column">
+      {resumeErrorBanner}
+      <LogSelector logs={filteredLogs} maxHeight={rows} onCancel={onCancel} onSelect={onSelect} onLogsChanged={isResumeWithRenameEnabled ? () => loadLogs(showAllProjects) : undefined} onLoadMore={loadMoreLogs} initialSearchQuery={initialSearchQuery} showAllProjects={showAllProjects} onToggleAllProjects={handleToggleAllProjects} onAgenticSearch={agenticSessionSearch} />
+    </Box>;
 }
 function NoConversationsMessage() {
   const $ = _c(2);

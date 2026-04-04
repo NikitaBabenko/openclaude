@@ -10,6 +10,13 @@ import {
   redactSecretValueForDisplay,
 } from '../utils/providerProfile.js'
 
+// OpenClaude: disable experimental API betas by default.
+// Tool search (defer_loading), global cache scope, and context management
+// require internal API support not available to external accounts → 500.
+// Users can opt-in with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=false.
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS ??= 'true'
+
 // Bugfix for corepack auto-pinning, which adds yarnpkg to peoples' package.jsons
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 process.env.COREPACK_ENABLE_AUTO_PIN = '0';
@@ -125,6 +132,18 @@ async function main(): Promise<void> {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(`${MACRO.DISPLAY_VERSION ?? MACRO.VERSION} (Open Claude)`);
     return;
+  }
+
+  // --provider: set provider env vars early so saved-profile resolution,
+  // validation, and the startup banner all see the intended provider/model.
+  if (args.includes('--provider')) {
+    const { applyProviderFlagFromArgs } = await import('../utils/providerFlag.js');
+    const result = applyProviderFlagFromArgs(args);
+    if (result?.error) {
+      // biome-ignore lint/suspicious/noConsole:: intentional error output
+      console.error(`Error: ${result.error}`);
+      process.exit(1);
+    }
   }
 
   {
@@ -399,24 +418,8 @@ async function main(): Promise<void> {
     process.env.CLAUDE_CODE_SIMPLE = '1';
   }
 
-  // --provider: set provider env vars early, before main module loads.
-  // This mirrors the --bare pattern: env vars must be in place before
-  // Commander option building and module-level constants are evaluated.
-  if (args.includes('--provider')) {
-    const { parseProviderFlag, applyProviderFlag } = await import('../utils/providerFlag.js');
-    const provider = parseProviderFlag(args);
-    if (provider) {
-      const result = applyProviderFlag(provider, args);
-      if (result.error) {
-        // biome-ignore lint/suspicious/noConsole:: intentional error output
-        console.error(`Error: ${result.error}`);
-        process.exit(1);
-      }
-    }
-  }
-
   // No special flags detected, load and run the full CLI
-  if (process.env.OPENCLAUDE_ENABLE_EARLY_INPUT === '1') {
+  if (process.env.OPENCLAUDE_DISABLE_EARLY_INPUT !== '1') {
     const {
       startCapturingEarlyInput
     } = await import('../utils/earlyInput.js');
