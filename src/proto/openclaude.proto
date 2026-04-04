@@ -13,15 +13,13 @@ service AgentService {
 // MESSAGES FROM CLIENT (Input)
 // ---------------------------------------------------------
 message ClientMessage {
-  string session_id = 1;
-
   oneof payload {
     // 1. Initial request (first message in the stream)
     ChatRequest request = 2;
-    
+
     // 2. User response to an agent prompt (e.g., command confirmation)
     UserInput input = 3;
-    
+
     // 3. Interrupt signal (if the user clicks "Stop generation")
     CancelSignal cancel = 4;
   }
@@ -30,10 +28,8 @@ message ClientMessage {
 message ChatRequest {
   string message = 1;
   string working_directory = 2; // Where the agent should execute commands
-  
-  // Optional session settings
-  optional string provider = 3; // openai, anthropic, ollama
   optional string model = 4;
+  string session_id = 5;        // Non-empty = cross-stream session persistence
 }
 
 message UserInput {

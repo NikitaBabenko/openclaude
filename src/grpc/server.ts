@@ -23,6 +23,7 @@ const openclaudeProto = protoDescriptor.openclaude.v1
 
 export class GrpcServer {
   private server: grpc.Server
+  private sessions: Map<string, any[]> = new Map()
 
   constructor() {
     this.server = new grpc.Server()
@@ -55,11 +56,18 @@ export class GrpcServer {
 
     // Accumulated messages from previous turns for multi-turn context
     let previousMessages: any[] = []
+    let sessionId = ''
 
     call.on('data', async (clientMessage) => {
       try {
         if (clientMessage.request) {
           const req = clientMessage.request
+          sessionId = req.session_id || ''
+
+          // Load previous messages from session store (cross-stream persistence)
+          if (sessionId && this.sessions.has(sessionId)) {
+            previousMessages = [...this.sessions.get(sessionId)!]
+          }
 
           engine = new QueryEngine({
             cwd: req.working_directory || process.cwd(),
@@ -104,7 +112,6 @@ export class GrpcServer {
             readFileCache: fileCache,
             userSpecifiedModel: req.model,
             fallbackModel: req.model,
-            // Configure provider inside AppState or env variables beforehand
           })
 
           // Track accumulated response data for FinalResponse
@@ -160,6 +167,11 @@ export class GrpcServer {
 
           // Save messages for multi-turn context in subsequent requests
           previousMessages = [...engine.getMessages()]
+
+          // Persist to session store for cross-stream resumption
+          if (sessionId) {
+            this.sessions.set(sessionId, previousMessages)
+          }
 
           call.write({
             done: {
