@@ -87,7 +87,8 @@ export class GrpcServer {
               call.write({
                 tool_start: {
                   tool_name: tool.name,
-                  arguments_json: JSON.stringify(input)
+                  arguments_json: JSON.stringify(input),
+                  tool_use_id: toolUseID
                 }
               })
 
@@ -213,7 +214,10 @@ export class GrpcServer {
     })
 
     call.on('end', () => {
-      // Client closed the stream
+      // Client closed the stream — stop any in-progress work
+      if (engine) {
+        engine.interrupt()
+      }
       engine = null
       pendingRequests.clear()
     })

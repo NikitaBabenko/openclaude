@@ -65,6 +65,7 @@ message TextChunk {
 message ToolCallStart {
   string tool_name = 1;
   string arguments_json = 2; // Arguments in JSON format
+  string tool_use_id = 3;    // Correlation ID matching ToolCallResult
 }
 
 // Result of tool execution
