@@ -206,6 +206,11 @@ export class GrpcServer {
                 completion_tokens: completionTokens
               }
             })
+
+            // Close the server-side stream once the final response has been flushed.
+            // Without this the client keeps its read loop open, which would hang the
+            // task until its idle timeout and flip a successful run into a failure.
+            call.end()
           }
 
           engine = null
