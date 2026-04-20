@@ -199,6 +199,16 @@ export class GrpcServer {
               this.sessions.set(sessionId, previousMessages)
             }
 
+            // Diagnostic: billing depends on these token counts — if the Claude API hands us
+            // back a success result with zero usage but non-empty text, something dropped
+            // usage along the way (likely a tool-result-only turn that didn't hit the LLM,
+            // or an SDK bug). Log so we can audit how often this happens before tightening.
+            if (promptTokens === 0 && completionTokens === 0 && fullText && fullText.length > 0) {
+              console.warn(
+                `[gRPC] zero-token FinalResponse: session=${sessionId ?? 'anon'} text-len=${fullText.length}`
+              )
+            }
+
             call.write({
               done: {
                 full_text: fullText,
