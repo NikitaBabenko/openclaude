@@ -90,9 +90,10 @@ message ActionRequired {
 
 // Final statistics
 message FinalResponse {
-  string full_text = 1;     // The entire generated text
+  string full_text = 1;          // The entire generated text
   int32 prompt_tokens = 2;
   int32 completion_tokens = 3;
+  double cost_usd = 4;           // Authoritative USD cost from provider (0.0 if unavailable)
 }
 
 message ErrorResponse {

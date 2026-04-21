@@ -579,6 +579,7 @@ interface OpenAIStreamChunk {
     prompt_tokens?: number
     completion_tokens?: number
     total_tokens?: number
+    cost?: number  // OpenRouter-specific: authoritative USD cost (requires usage.include=true in request)
     prompt_tokens_details?: {
       cached_tokens?: number
     }
@@ -602,6 +603,8 @@ function convertChunkUsage(
     output_tokens: usage.completion_tokens ?? 0,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: cached,
+    // Propagate OpenRouter's authoritative cost so billing can use it directly.
+    ...(usage.cost !== undefined ? { cost_usd: usage.cost } : {}),
   }
 }
 
@@ -1237,6 +1240,13 @@ class OpenAIShimMessages {
 
     if (params.stream && !isLocalProviderUrl(request.baseUrl)) {
       body.stream_options = { include_usage: true }
+    }
+
+    // OpenRouter returns authoritative USD cost in usage.cost when the request
+    // body includes this flag. Without it, usage.cost is absent and we can only
+    // estimate cost from the price table.
+    if (request.baseUrl?.includes('openrouter.ai')) {
+      ;(body as Record<string, unknown>).usage = { include: true }
     }
 
     const isGithub = isGithubModelsMode()

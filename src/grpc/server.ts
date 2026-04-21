@@ -138,18 +138,32 @@ export class GrpcServer {
           let fullText = ''
           let promptTokens = 0
           let completionTokens = 0
+          let costUsd = 0.0
 
           const generator = engine.submitMessage(req.message)
 
           for await (const msg of generator) {
             if (msg.type === 'stream_event') {
-              if (msg.event.type === 'content_block_delta' && msg.event.delta.type === 'text_delta') {
+              const event = msg.event
+              if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
                 call.write({
                   text_chunk: {
-                    text: msg.event.delta.text
+                    text: event.delta.text
                   }
                 })
-                fullText += msg.event.delta.text
+                fullText += event.delta.text
+              }
+              // Belt-and-suspenders: accumulate tokens and cost directly from stream
+              // events so we don't depend solely on the result message's aggregation
+              // (which may be incomplete for non-Anthropic providers via the OpenAI shim).
+              if (event.type === 'message_start') {
+                const u = (event as unknown as { message?: { usage?: { input_tokens?: number } } }).message?.usage
+                if (u?.input_tokens) promptTokens = u.input_tokens
+              }
+              if (event.type === 'message_delta') {
+                const u = (event as unknown as { usage?: { output_tokens?: number; cost_usd?: number } }).usage
+                if (u?.output_tokens) completionTokens = u.output_tokens
+                if (u?.cost_usd !== undefined) costUsd = u.cost_usd
               }
             } else if (msg.type === 'user') {
               // Extract tool results
@@ -175,13 +189,16 @@ export class GrpcServer {
                 }
               }
             } else if (msg.type === 'result') {
-              // Extract real token counts and final text from the result
+              // Extract real token counts and final text from the result.
+              // Prefer values already accumulated from stream events (above); use
+              // result.usage as fallback in case the stream path didn't fire.
               if (msg.subtype === 'success') {
                 if (msg.result) {
                   fullText = msg.result
                 }
-                promptTokens = msg.usage?.input_tokens ?? 0
-                completionTokens = msg.usage?.output_tokens ?? 0
+                if (promptTokens === 0) promptTokens = msg.usage?.input_tokens ?? 0
+                if (completionTokens === 0) completionTokens = msg.usage?.output_tokens ?? 0
+                if (costUsd === 0) costUsd = (msg.usage as unknown as { cost_usd?: number })?.cost_usd ?? 0.0
               }
             }
           }
@@ -213,7 +230,8 @@ export class GrpcServer {
               done: {
                 full_text: fullText,
                 prompt_tokens: promptTokens,
-                completion_tokens: completionTokens
+                completion_tokens: completionTokens,
+                cost_usd: costUsd
               }
             })
 
