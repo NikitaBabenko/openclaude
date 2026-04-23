@@ -159,23 +159,32 @@ export class GrpcServer {
               }
               // Sum tokens and cost across every inner LLM call in the agentic loop.
               // Each chat/completions request to the provider produces its own message_start
-              // (with input_tokens) and message_delta (with output_tokens + usage.cost from
-              // OpenRouter when usage.include=true). Using `+=` instead of `=` is the fix
-              // for the "we only bill the last turn" cost-accounting bug.
+              // and message_delta. Where the usage numbers actually live depends on the
+              // backend:
+              //   - Native Anthropic stream: message_start.message.usage carries
+              //     input_tokens; message_delta.usage carries output_tokens.
+              //   - OpenAI-compat shim (openaiShim.ts): message_start.message.usage is
+              //     emitted with all zeros, and the FINAL message_delta carries BOTH
+              //     input_tokens and output_tokens (plus OpenRouter's cost_usd when
+              //     usage.include=true).
+              // So we must read input/output from BOTH events and sum them, and we count
+              // inner LLM calls via message_start (one per turn) regardless of whether
+              // its usage block is populated. Using `+=` instead of `=` fixes the
+              // "we only bill the last turn" cost-accounting bug.
               if (event.type === 'message_start') {
-                const u = (event as unknown as { message?: { usage?: { input_tokens?: number } } }).message?.usage
-                if (u?.input_tokens) {
-                  promptTokens += u.input_tokens
-                  innerCallCount += 1
-                }
+                innerCallCount += 1
+                const u = (event as unknown as { message?: { usage?: { input_tokens?: number; output_tokens?: number } } }).message?.usage
+                if (u?.input_tokens) promptTokens += u.input_tokens
+                if (u?.output_tokens) completionTokens += u.output_tokens
               }
               if (event.type === 'message_delta') {
-                const u = (event as unknown as { usage?: { output_tokens?: number; cost_usd?: number } }).usage
+                const u = (event as unknown as { usage?: { input_tokens?: number; output_tokens?: number; cost_usd?: number } }).usage
+                if (u?.input_tokens) promptTokens += u.input_tokens
                 if (u?.output_tokens) completionTokens += u.output_tokens
                 if (typeof u?.cost_usd === 'number' && u.cost_usd > 0) {
                   costUsd += u.cost_usd
                   console.log(
-                    `[gRPC] inner LLM call #${innerCallCount}: out=${u.output_tokens ?? 0} cost=$${u.cost_usd.toFixed(6)}`
+                    `[gRPC] inner LLM call #${innerCallCount}: in=${u.input_tokens ?? 0} out=${u.output_tokens ?? 0} cost=$${u.cost_usd.toFixed(6)}`
                   )
                 }
               }
