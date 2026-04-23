@@ -734,7 +734,7 @@ async function* openaiStreamToAnthropic(
 
       const chunkUsage = convertChunkUsage(chunk.usage)
       if (chunk.usage) {
-        console.log(`[shim:debug] chunk.usage=${JSON.stringify(chunk.usage)} → chunkUsage=${JSON.stringify(chunkUsage)}`)
+        console.log(`[gRPC] shim chunk.usage=${JSON.stringify(chunk.usage)} → chunkUsage=${JSON.stringify(chunkUsage)}`)
       }
 
       for (const choice of chunk.choices ?? []) {
