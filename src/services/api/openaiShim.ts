@@ -733,9 +733,6 @@ async function* openaiStreamToAnthropic(
       }
 
       const chunkUsage = convertChunkUsage(chunk.usage)
-      if (chunk.usage) {
-        console.log(`[gRPC] shim chunk.usage=${JSON.stringify(chunk.usage)} → chunkUsage=${JSON.stringify(chunkUsage)}`)
-      }
 
       for (const choice of chunk.choices ?? []) {
         const delta = choice.delta
@@ -1008,10 +1005,18 @@ async function* openaiStreamToAnthropic(
         }
       }
 
+      // OpenRouter (and some OpenAI-compat providers) deliver usage in a
+      // trailing chunk AFTER the finish_reason chunk. That trailing chunk can
+      // be either (a) a usage-only chunk with empty `choices`, OR (b) a chunk
+      // that still carries a final choice with `delta: {}` and no new
+      // finish_reason. The previous `choices.length === 0` guard missed case
+      // (b), causing message_delta to ship with `usage=undefined` and the
+      // downstream billing code to record a zero-cost turn. The
+      // `hasEmittedFinalUsage` flag already guarantees we never emit usage
+      // twice, so drop the length check.
       if (
         !hasEmittedFinalUsage &&
         chunkUsage &&
-        (chunk.choices?.length ?? 0) === 0 &&
         lastStopReason !== null
       ) {
         yield {
