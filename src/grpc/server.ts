@@ -134,11 +134,15 @@ export class GrpcServer {
             fallbackModel: req.model,
           })
 
-          // Track accumulated response data for FinalResponse
+          // Track accumulated response data for FinalResponse.
+          // submitMessage() runs an agentic loop (LLM → tool call → tool result → next LLM call → ...),
+          // so we receive multiple message_start/message_delta pairs — one per inner LLM turn.
+          // We MUST sum across them; otherwise we only bill for the last turn and lose N-1 prior ones.
           let fullText = ''
           let promptTokens = 0
           let completionTokens = 0
           let costUsd = 0.0
+          let innerCallCount = 0
 
           const generator = engine.submitMessage(req.message)
 
@@ -153,17 +157,27 @@ export class GrpcServer {
                 })
                 fullText += event.delta.text
               }
-              // Belt-and-suspenders: accumulate tokens and cost directly from stream
-              // events so we don't depend solely on the result message's aggregation
-              // (which may be incomplete for non-Anthropic providers via the OpenAI shim).
+              // Sum tokens and cost across every inner LLM call in the agentic loop.
+              // Each chat/completions request to the provider produces its own message_start
+              // (with input_tokens) and message_delta (with output_tokens + usage.cost from
+              // OpenRouter when usage.include=true). Using `+=` instead of `=` is the fix
+              // for the "we only bill the last turn" cost-accounting bug.
               if (event.type === 'message_start') {
                 const u = (event as unknown as { message?: { usage?: { input_tokens?: number } } }).message?.usage
-                if (u?.input_tokens) promptTokens = u.input_tokens
+                if (u?.input_tokens) {
+                  promptTokens += u.input_tokens
+                  innerCallCount += 1
+                }
               }
               if (event.type === 'message_delta') {
                 const u = (event as unknown as { usage?: { output_tokens?: number; cost_usd?: number } }).usage
-                if (u?.output_tokens) completionTokens = u.output_tokens
-                if (u?.cost_usd !== undefined) costUsd = u.cost_usd
+                if (u?.output_tokens) completionTokens += u.output_tokens
+                if (typeof u?.cost_usd === 'number' && u.cost_usd > 0) {
+                  costUsd += u.cost_usd
+                  console.log(
+                    `[gRPC] inner LLM call #${innerCallCount}: out=${u.output_tokens ?? 0} cost=$${u.cost_usd.toFixed(6)}`
+                  )
+                }
               }
             } else if (msg.type === 'user') {
               // Extract tool results
@@ -189,16 +203,24 @@ export class GrpcServer {
                 }
               }
             } else if (msg.type === 'result') {
-              // Extract real token counts and final text from the result.
-              // Prefer values already accumulated from stream events (above); use
-              // result.usage as fallback in case the stream path didn't fire.
+              // Extract final text from the result. Token/cost values are already
+              // summed from per-inner-call stream events above (that is the
+              // authoritative path). We only fall back to result.usage when the
+              // stream path produced nothing at all — in which case result.usage
+              // typically reflects only the last turn, which is better than zero
+              // but understates the true cost of a multi-turn run. Never overwrite
+              // already-accumulated non-zero values: that was the legacy bug.
               if (msg.subtype === 'success') {
                 if (msg.result) {
                   fullText = msg.result
                 }
-                if (promptTokens === 0) promptTokens = msg.usage?.input_tokens ?? 0
-                if (completionTokens === 0) completionTokens = msg.usage?.output_tokens ?? 0
-                if (costUsd === 0) costUsd = (msg.usage as unknown as { cost_usd?: number })?.cost_usd ?? 0.0
+                if (promptTokens === 0 && completionTokens === 0) {
+                  promptTokens = msg.usage?.input_tokens ?? 0
+                  completionTokens = msg.usage?.output_tokens ?? 0
+                }
+                if (costUsd === 0) {
+                  costUsd = (msg.usage as unknown as { cost_usd?: number })?.cost_usd ?? 0.0
+                }
               }
             }
           }
@@ -216,15 +238,18 @@ export class GrpcServer {
               this.sessions.set(sessionId, previousMessages)
             }
 
-            // Diagnostic: billing depends on these token counts — if the Claude API hands us
-            // back a success result with zero usage but non-empty text, something dropped
-            // usage along the way (likely a tool-result-only turn that didn't hit the LLM,
-            // or an SDK bug). Log so we can audit how often this happens before tightening.
+            // Diagnostic: billing depends on these aggregated token counts. If the Claude
+            // API hands us back a success result with zero usage but non-empty text,
+            // usage was dropped somewhere (tool-result-only turn that didn't hit the LLM,
+            // OpenAI-shim bug, or provider that doesn't surface usage on streamed deltas).
             if (promptTokens === 0 && completionTokens === 0 && fullText && fullText.length > 0) {
               console.warn(
-                `[gRPC] zero-token FinalResponse: session=${sessionId ?? 'anon'} text-len=${fullText.length}`
+                `[gRPC] zero-token FinalResponse: session=${sessionId ?? 'anon'} text-len=${fullText.length} inner-calls=${innerCallCount}`
               )
             }
+            console.log(
+              `[gRPC] FinalResponse: session=${sessionId ?? 'anon'} inner-calls=${innerCallCount} prompt=${promptTokens} completion=${completionTokens} cost=$${costUsd.toFixed(6)}`
+            )
 
             call.write({
               done: {
