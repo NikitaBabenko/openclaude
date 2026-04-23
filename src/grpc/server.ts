@@ -173,12 +173,15 @@ export class GrpcServer {
               // "we only bill the last turn" cost-accounting bug.
               if (event.type === 'message_start') {
                 innerCallCount += 1
-                const u = (event as unknown as { message?: { usage?: { input_tokens?: number; output_tokens?: number } } }).message?.usage
+                const u = (event as unknown as { message?: { usage?: { input_tokens?: number; output_tokens?: number; cost_usd?: number } } }).message?.usage
+                console.log(`[gRPC:debug] message_start usage=${JSON.stringify(u)}`)
                 if (u?.input_tokens) promptTokens += u.input_tokens
                 if (u?.output_tokens) completionTokens += u.output_tokens
+                if (typeof u?.cost_usd === 'number' && u.cost_usd > 0) costUsd += u.cost_usd
               }
               if (event.type === 'message_delta') {
                 const u = (event as unknown as { usage?: { input_tokens?: number; output_tokens?: number; cost_usd?: number } }).usage
+                console.log(`[gRPC:debug] message_delta usage=${JSON.stringify(u)}`)
                 if (u?.input_tokens) promptTokens += u.input_tokens
                 if (u?.output_tokens) completionTokens += u.output_tokens
                 if (typeof u?.cost_usd === 'number' && u.cost_usd > 0) {
@@ -187,6 +190,9 @@ export class GrpcServer {
                     `[gRPC] inner LLM call #${innerCallCount}: in=${u.input_tokens ?? 0} out=${u.output_tokens ?? 0} cost=$${u.cost_usd.toFixed(6)}`
                   )
                 }
+              }
+              if (event.type === 'message_stop') {
+                console.log(`[gRPC:debug] message_stop seen at inner-call #${innerCallCount}`)
               }
             } else if (msg.type === 'user') {
               // Extract tool results
