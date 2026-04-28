@@ -7,6 +7,7 @@ import { getTools } from '../tools.js'
 import { getDefaultAppState } from '../state/AppStateStore.js'
 import { AppState } from '../state/AppState.js'
 import { FileStateCache, READ_FILE_STATE_CACHE_SIZE } from '../utils/fileStateCache.js'
+import { runWithCwdOverride } from '../utils/cwd.js'
 
 const PROTO_PATH = path.resolve(import.meta.dirname, '../proto/openclaude.proto')
 
@@ -77,6 +78,7 @@ export class GrpcServer {
           const req = clientMessage.request
           sessionId = req.session_id || ''
           previousMessages = []
+          await runWithCwdOverride(req.working_directory || process.cwd(), async () => {
 
           // Load previous messages from session store (cross-stream persistence)
           if (sessionId && this.sessions.has(sessionId)) {
@@ -277,6 +279,7 @@ export class GrpcServer {
           }
 
           engine = null
+          })
 
         } else if (clientMessage.input) {
           const promptId = clientMessage.input.prompt_id
