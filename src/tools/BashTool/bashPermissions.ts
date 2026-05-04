@@ -110,6 +110,85 @@ export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50
 export const MAX_SUGGESTED_RULES_FOR_COMPOUND = 5
 
 /**
+ * Squad fork: hardcoded baseline deny list for commands that mutate the host machine
+ * (Docker daemon, systemd, privilege escalation, pipe-to-shell). These never have a
+ * legitimate place in an LLM-driven workspace edit session — Squad's deploy / VibeNest /
+ * openclaude pipelines all run host-mutating commands from explicitly-scoped scripts,
+ * never from within the bash tool.
+ *
+ * Defense in depth: today the Squad DevWorker container has neither `docker` CLI nor
+ * `/var/run/docker.sock` mounted, so these commands would fail at `command not found`
+ * anyway. This list is the seatbelt for the day someone bind-mounts the socket for a
+ * legitimate reason (building user images locally, etc.) and forgets that the LLM also
+ * gains daemon access. The 17-day, 18,937-restart `synth_theta_analytics` orphan that
+ * burned CPU on a Squad worker host (manual `docker run` from SSH, not openclaude) was
+ * the smoke that prompted this seatbelt.
+ *
+ * No env-var or rule override — this is fork policy, not user-tunable. Read-only docker
+ * subcommands (`ps`, `images`, `inspect`, `logs`, `version`) are intentionally allowed:
+ * they're useful for diagnostics and can't mutate state.
+ */
+const SQUAD_BASELINE_DENY_PATTERNS: ReadonlyArray<{
+  pattern: RegExp
+  reason: string
+}> = [
+  {
+    pattern:
+      /^\s*docker\s+(run|build|exec|compose|kill|rm|rmi|network|volume|swarm|service|node|stop|start|restart|pause|unpause|update|cp)\b/,
+    reason: 'docker daemon mutation',
+  },
+  {
+    // Anchor on whitespace-or-start because `\b` doesn't match between two
+    // non-word chars (the space before `--restart` and the `-` itself), so
+    // `\b--restart` would never fire on a real argv-style invocation.
+    pattern: /(?:^|\s)--restart(?:[=\s]|$)/,
+    reason: 'persistent container restart policy',
+  },
+  {
+    pattern: /^\s*systemctl\s+(?!status|is-active|is-enabled|show|list-timers|list-units|cat)/,
+    reason: 'systemd unit management',
+  },
+  {
+    pattern: /^\s*sudo\s+/,
+    reason: 'privilege escalation',
+  },
+  {
+    pattern: /^\s*pkexec\s+/,
+    reason: 'privilege escalation (polkit)',
+  },
+  {
+    pattern: /\bcurl\b[^|;&]*\|\s*(?:bash|sh|zsh|fish)\b/,
+    reason: 'pipe-to-shell from network (curl)',
+  },
+  {
+    pattern: /\bwget\b[^|;&]*\|\s*(?:bash|sh|zsh|fish)\b/,
+    reason: 'pipe-to-shell from network (wget)',
+  },
+]
+
+/**
+ * Returns a `deny` PermissionResult if the command matches a Squad fork baseline-deny
+ * pattern, or null otherwise. Exported for unit-test access without going through the
+ * full permission stack. Caller should consult this BEFORE rule lookups so user-supplied
+ * allow rules can never override fork policy.
+ */
+export function checkSquadBaselineDeny(command: string): PermissionResult | null {
+  for (const { pattern, reason } of SQUAD_BASELINE_DENY_PATTERNS) {
+    if (pattern.test(command)) {
+      return {
+        behavior: 'deny',
+        message: `Permission to use ${BashTool.name} with command ${command.trim()} has been denied: Squad fork blocks ${reason} from the bash tool. Modify SQUAD_BASELINE_DENY_PATTERNS in bashPermissions.ts if this is genuinely required.`,
+        decisionReason: {
+          type: 'other',
+          reason: `Squad fork blocks ${reason} from the bash tool.`,
+        },
+      }
+    }
+  }
+  return null
+}
+
+/**
  * Log classifier evaluation results for analysis.
  * No-op in external builds.
  */
@@ -1164,6 +1243,13 @@ export async function checkCommandAndSuggestRules(
   compoundCommandHasCd?: boolean,
   astParseSucceeded?: boolean,
 ): Promise<PermissionResult> {
+  // 0. Squad fork: hardcoded baseline deny for host-mutating commands. Cannot be
+  //    overridden by user permission rules — it short-circuits before exact-match /
+  //    prefix-match / classifier checks. See SQUAD_BASELINE_DENY_PATTERNS above for
+  //    rationale.
+  const baselineDeny = checkSquadBaselineDeny(input.command)
+  if (baselineDeny) return baselineDeny
+
   // 1. Check exact match first
   const exactMatchResult = bashToolCheckExactMatchPermission(
     input,
